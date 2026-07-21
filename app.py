@@ -138,12 +138,20 @@ def build_proxy_auth_extension(proxy_host, proxy_port, proxy_user, proxy_pass, f
     return folder
 
 
-# ---- Bright Data / any authenticated proxy config (leave blank to disable) ----
-PROXY_HOST = "brd.superproxy.io"
-PROXY_PORT = "33335"
-PROXY_USER = "brd-customer-hl_35b1101b-zone-crichero_proxy"
-PROXY_PASS = "2lkbde2p544p"
-USE_PROXY = True  # False kar do agar proxy use nahi karna
+def _get_secret(key, default=""):
+    """Streamlit secrets se proxy config uthao (cloud pe Settings > Secrets se aayega,
+    local pe .streamlit/secrets.toml se). Agar kahin na mile to env var ya default use hoga."""
+    try:
+        return st.secrets["proxy"][key]
+    except Exception:
+        return os.environ.get(f"PROXY_{key.upper()}", default)
+
+
+PROXY_HOST = _get_secret("host", "brd.superproxy.io")
+PROXY_PORT = _get_secret("port", "33335")
+PROXY_USER = _get_secret("user", "")
+PROXY_PASS = _get_secret("pass", "")
+USE_PROXY = str(_get_secret("enabled", "true")).lower() == "true" and bool(PROXY_USER) and bool(PROXY_PASS)
 
 
 def get_driver():
@@ -164,7 +172,7 @@ def get_driver():
             os.chmod(chromedriver_path, 0o755)
 
         options = uc.ChromeOptions()
-        options.add_argument("--headless=new")
+        options.add_argument("--headless")  # legacy headless: extensions load more reliably than --headless=new
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--window-size=1920,1080")

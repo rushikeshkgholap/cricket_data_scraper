@@ -1,0 +1,5 @@
+.streamlit/secrets.toml
+cricket_output/temp_photos/
+__pycache__/
+*.pyc
+proxy_auth_ext/

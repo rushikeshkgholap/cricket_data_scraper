@@ -681,12 +681,20 @@ def build_final_bowling_excel(bowling_df, players_df, out_path):
 # FULL PIPELINE (runs inside Streamlit button callback)
 # =====================================================================
 def run_pipeline(links, scrape_photos, progress_cb):
+    log_lines = []
+
+    def log_and_progress(msg, frac):
+        log_lines.append(msg)
+        progress_cb(msg, frac)
+
     driver = get_driver()
 
     if USE_PROXY:
-        progress_cb("Proxy check kar rahe hain...", 0.0)
+        log_and_progress("Proxy check kar rahe hain...", 0.0)
         ip_info = _check_proxy_ip(driver)
-        progress_cb(f"Proxy IP check result: {ip_info}", 0.02)
+        log_and_progress(f"Proxy IP check result: {ip_info}", 0.02)
+    else:
+        log_and_progress("Proxy OFF hai (USE_PROXY False ya credentials missing) — direct connection use ho rahi hai.", 0.0)
 
     match_rows = []
     batting_frames = []
@@ -699,7 +707,7 @@ def run_pipeline(links, scrape_photos, progress_cb):
         # ---- Phase 1: scrape all match scorecards ----
         for i, link in enumerate(links, start=1):
             link = link.rstrip("/").replace("/summary", "/scorecard")
-            progress_cb(f"[{i}/{total}] Scraping match: {link}", (i - 1) / (total * 2))
+            log_and_progress(f"[{i}/{total}] Scraping match: {link}", (i - 1) / (total * 2))
             try:
                 result, err = scrape_match(link, driver)
                 if result is None:
@@ -733,7 +741,7 @@ def run_pipeline(links, scrape_photos, progress_cb):
         total_players = len(pids)
         for j, pid in enumerate(pids, start=1):
             info = player_registry[pid]
-            progress_cb(f"[{j}/{total_players}] Player profile: {info.get('Player_Name')}",
+            log_and_progress(f"[{j}/{total_players}] Player profile: {info.get('Player_Name')}",
                         0.5 + (j - 1) / (max(total_players, 1) * 2))
             batting_style, bowling_style, img_path, photo_url = (None, None, None, None)
             if scrape_photos:
@@ -761,7 +769,7 @@ def run_pipeline(links, scrape_photos, progress_cb):
             pass
 
     # ---- Phase 3: build final excel outputs ----
-    progress_cb("Building final Batting_Final.xlsx / Bowling_Final.xlsx ...", 0.95)
+    log_and_progress("Building final Batting_Final.xlsx / Bowling_Final.xlsx ...", 0.95)
     batting_merged = pd.DataFrame()
     bowling_merged = pd.DataFrame()
     if not batting_df.empty and not players_df.empty:
@@ -769,7 +777,7 @@ def run_pipeline(links, scrape_photos, progress_cb):
     if not bowling_df.empty and not players_df.empty:
         bowling_merged = build_final_bowling_excel(bowling_df, players_df, BOWLING_XLSX)
 
-    progress_cb("Done!", 1.0)
+    log_and_progress("Done!", 1.0)
 
     return {
         "match_df": match_df,
@@ -777,6 +785,7 @@ def run_pipeline(links, scrape_photos, progress_cb):
         "bowling_df": bowling_merged if not bowling_merged.empty else bowling_df,
         "players_df": players_df,
         "errors": errors,
+        "log_lines": log_lines,
     }
 
 
@@ -839,6 +848,10 @@ if submitted and SELENIUM_AVAILABLE:
             results = run_pipeline(links, scrape_photos, progress_cb)
 
         st.success("Pipeline complete!")
+
+        with st.expander("📜 Pipeline Log (proxy check yahan dekho)", expanded=True):
+            for line in results.get("log_lines", []):
+                st.write("-", line)
 
         if results["errors"]:
             with st.expander(f"⚠️ {len(results['errors'])} error(s) aayi"):

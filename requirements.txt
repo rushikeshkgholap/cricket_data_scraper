@@ -8,3 +8,5 @@ pillow
 undetected-chromedriver
 selenium
 packaging
+selenium-wire
+blinker<1.6

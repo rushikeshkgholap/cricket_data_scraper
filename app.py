@@ -117,23 +117,24 @@ PROXY_HOST = _get_secret("host", "brd.superproxy.io")
 PROXY_PORT = _get_secret("port", "33335")
 PROXY_USER = _get_secret("user", "")
 PROXY_PASS = _get_secret("pass", "")
-ZENROWS_API_KEY = _get_secret("zenrows_api_key", "") or os.environ.get("ZENROWS_API_KEY", "")
-USE_ZENROWS = bool(ZENROWS_API_KEY)
 
+# ---------- YAHAN CHANGE KIYA GAYA HAI ----------
+import urllib.parse
+
+SCRAPE_DO_API_KEY = _get_secret("scrape_do_api_key", "") or os.environ.get("SCRAPE_DO_API_KEY", "")
+# Variable ka naam USE_ZENROWS hi rakha hai taaki aage ka poora code bina change kiye chal jaye
+USE_ZENROWS = bool(SCRAPE_DO_API_KEY)
 
 def fetch_html_via_zenrows(url):
-    """ZenRows khud JS render + Cloudflare bypass (premium proxy) handle karta hai.
-    Selenium/Chrome ki zaroorat hi nahi padti is path me."""
-    params = {
-        "url": url,
-        "apikey": ZENROWS_API_KEY,
-        "js_render": "true",
-        "premium_proxy": "true",
-    }
-    resp = requests.get("https://api.zenrows.com/v1/", params=params, timeout=90)
+    """Scrape.do API use kar rahe hain (Function ka naam wahi rakha hai taaki code break na ho)"""
+    encoded_url = urllib.parse.quote(url)
+    api_url = f"http://api.scrape.do/?token={SCRAPE_DO_API_KEY}&url={encoded_url}&render=true"
+    resp = requests.get(api_url, timeout=90)
+    
     if resp.status_code != 200:
-        raise RuntimeError(f"ZenRows error {resp.status_code}: {resp.text[:300]}")
+        raise RuntimeError(f"Scrape.do error {resp.status_code}: {resp.text[:300]}")
     return resp.text
+# ------------------------------------------------
 
 
 USE_PROXY = str(_get_secret("enabled", "true")).lower() == "true" and bool(PROXY_HOST) and bool(PROXY_PORT) and not USE_ZENROWS
@@ -725,7 +726,7 @@ def run_pipeline(links, scrape_photos, progress_cb):
         progress_cb(msg, frac)
 
     if USE_ZENROWS:
-        log_and_progress("ZenRows API use ho rahi hai — Selenium/Chrome ki zaroorat nahi hai.", 0.0)
+        log_and_progress("ZenRows/Scrape.do API use ho rahi hai — Selenium/Chrome ki zaroorat nahi hai.", 0.0)
         driver = None
     else:
         driver = get_driver()
@@ -804,7 +805,8 @@ def run_pipeline(links, scrape_photos, progress_cb):
 
     finally:
         try:
-            driver.quit()
+            if driver:
+                driver.quit()
         except Exception:
             pass
 
@@ -840,11 +842,11 @@ CAN_SCRAPE = SELENIUM_AVAILABLE or USE_ZENROWS
 if CAN_SCRAPE:
     st.caption("Ek ya multiple CricHeroes scorecard links do — scraping se lekar final Batting/Bowling/Match files tak, sab automatic.")
     if USE_ZENROWS:
-        st.caption("🔑 ZenRows API active hai — Cloudflare bypass isi se ho raha hai.")
+        st.caption("🔑 Scrape.do API active hai — Cloudflare bypass isi se ho raha hai.")
 else:
     st.warning(
-        "⚠️ Is environment me Chrome/Selenium available nahi hai aur ZenRows API key bhi set nahi hai, "
-        "isliye live scraping yahan nahi chalegi. Ya to ZenRows API key secrets me daalo, ya scraping apne "
+        "⚠️ Is environment me Chrome/Selenium available nahi hai aur Scrape.do API key bhi set nahi hai, "
+        "isliye live scraping yahan nahi chalegi. Ya to API key secrets me daalo, ya scraping apne "
         "**local computer** pe `streamlit run app.py` se chalao, phir yahan neeche pehle-se-scraped files "
         "upload karo ya `cricket_output/` folder GitHub repo me commit kar do — wo automatically load ho jaayengi."
     )
@@ -861,7 +863,7 @@ if "results" not in st.session_state:
         }
         st.session_state["results"] = auto_results
 
-# ---- Scraping form: only usable where Selenium/Chrome OR ZenRows is actually available ----
+# ---- Scraping form: only usable where Selenium/Chrome OR Scrape.do is actually available ----
 with st.form("scrape_form"):
     links_text = st.text_area(
         "CricHeroes scorecard links (ek line me ek link):",
@@ -886,7 +888,7 @@ if submitted and CAN_SCRAPE:
             progress_bar.progress(min(max(frac, 0.0), 1.0))
 
         if USE_ZENROWS:
-            spinner_msg = "Pipeline chal raha hai (ZenRows API ke zariye — koi browser nahi khulega, yahi normal hai)..."
+            spinner_msg = "Pipeline chal raha hai (Scrape.do API ke zariye — koi browser nahi khulega, yahi normal hai)..."
         elif os.path.exists("/usr/bin/chromium"):
             spinner_msg = "Pipeline chal raha hai (headless mode — koi visible window nahi khulegi, yahi normal hai)..."
         else:
@@ -896,7 +898,7 @@ if submitted and CAN_SCRAPE:
 
         st.success("Pipeline complete!")
 
-        with st.expander("📜 Pipeline Log (proxy check yahan dekho)", expanded=True):
+        with st.expander("📜 Pipeline Log", expanded=True):
             for line in results.get("log_lines", []):
                 st.write("-", line)
 

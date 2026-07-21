@@ -1,0 +1,10 @@
+streamlit
+pandas
+numpy
+requests
+beautifulsoup4
+openpyxl
+pillow
+undetected-chromedriver
+selenium
+packaging

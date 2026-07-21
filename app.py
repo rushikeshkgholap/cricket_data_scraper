@@ -117,7 +117,26 @@ PROXY_HOST = _get_secret("host", "brd.superproxy.io")
 PROXY_PORT = _get_secret("port", "33335")
 PROXY_USER = _get_secret("user", "")
 PROXY_PASS = _get_secret("pass", "")
-USE_PROXY = str(_get_secret("enabled", "true")).lower() == "true" and bool(PROXY_USER) and bool(PROXY_PASS)
+ZENROWS_API_KEY = _get_secret("zenrows_api_key", "") or os.environ.get("ZENROWS_API_KEY", "")
+USE_ZENROWS = bool(ZENROWS_API_KEY)
+
+
+def fetch_html_via_zenrows(url):
+    """ZenRows khud JS render + Cloudflare bypass (premium proxy) handle karta hai.
+    Selenium/Chrome ki zaroorat hi nahi padti is path me."""
+    params = {
+        "url": url,
+        "apikey": ZENROWS_API_KEY,
+        "js_render": "true",
+        "premium_proxy": "true",
+    }
+    resp = requests.get("https://api.zenrows.com/v1/", params=params, timeout=90)
+    if resp.status_code != 200:
+        raise RuntimeError(f"ZenRows error {resp.status_code}: {resp.text[:300]}")
+    return resp.text
+
+
+USE_PROXY = str(_get_secret("enabled", "true")).lower() == "true" and bool(PROXY_HOST) and bool(PROXY_PORT) and not USE_ZENROWS
 
 
 def _check_proxy_ip(driver):
@@ -158,7 +177,10 @@ def get_driver():
         options.binary_location = system_chromium
 
         if use_wire:
-            proxy_url = f"http://{PROXY_USER}:{PROXY_PASS}@{PROXY_HOST}:{PROXY_PORT}"
+            if PROXY_USER and PROXY_PASS:
+                proxy_url = f"http://{PROXY_USER}:{PROXY_PASS}@{PROXY_HOST}:{PROXY_PORT}"
+            else:
+                proxy_url = f"http://{PROXY_HOST}:{PROXY_PORT}"  # free proxy: usually no auth needed
             sw_options = {
                 "proxy": {"http": proxy_url, "https": proxy_url, "no_proxy": "localhost,127.0.0.1"}
             }
@@ -175,7 +197,10 @@ def get_driver():
         options.add_argument("--window-size=1920,1080")
 
         if use_wire:
-            proxy_url = f"http://{PROXY_USER}:{PROXY_PASS}@{PROXY_HOST}:{PROXY_PORT}"
+            if PROXY_USER and PROXY_PASS:
+                proxy_url = f"http://{PROXY_USER}:{PROXY_PASS}@{PROXY_HOST}:{PROXY_PORT}"
+            else:
+                proxy_url = f"http://{PROXY_HOST}:{PROXY_PORT}"
             sw_options = {
                 "proxy": {"http": proxy_url, "https": proxy_url, "no_proxy": "localhost,127.0.0.1"}
             }
@@ -398,9 +423,14 @@ def clean_bowling(bowlers):
 # =====================================================================
 def scrape_match(url, driver, wait_seconds=15):
     match_id = get_match_id(url)
-    driver.get(url)
-    time.sleep(wait_seconds)
-    html = driver.page_source
+
+    if USE_ZENROWS:
+        html = fetch_html_via_zenrows(url)
+    else:
+        driver.get(url)
+        time.sleep(wait_seconds)
+        html = driver.page_source
+
     soup = BeautifulSoup(html, "html.parser")
 
     raw = get_raw_blob(soup)
@@ -427,7 +457,10 @@ def scrape_match(url, driver, wait_seconds=15):
     if len(scorecard) < 2:
         return None, "Kam se kam 2 innings ka data nahi mila (match live/incomplete ho sakta hai)."
 
-    body_text = driver.find_element(By.TAG_NAME, "body").text
+    if USE_ZENROWS:
+        body_text = soup.get_text("\n")
+    else:
+        body_text = driver.find_element(By.TAG_NAME, "body").text
     md = get_match_text_fields(body_text, url)
     team_names = list(OrderedDict((inn.get("teamName", ""), None) for inn in scorecard).keys())
 
@@ -574,9 +607,13 @@ def scrape_player_profile(player_id, driver, wait_seconds=4):
     batting, bowling, local_img_path, online_photo_url = None, None, None, None
     for retry in range(2):
         try:
-            driver.get(url)
-            time.sleep(wait_seconds)
-            soup = BeautifulSoup(driver.page_source, "html.parser")
+            if USE_ZENROWS:
+                html = fetch_html_via_zenrows(url)
+            else:
+                driver.get(url)
+                time.sleep(wait_seconds)
+                html = driver.page_source
+            soup = BeautifulSoup(html, "html.parser")
             text = soup.get_text("\n")
             lines = [l.strip() for l in text.split("\n") if l.strip()]
             for idx, line in enumerate(lines):
@@ -687,14 +724,17 @@ def run_pipeline(links, scrape_photos, progress_cb):
         log_lines.append(msg)
         progress_cb(msg, frac)
 
-    driver = get_driver()
-
-    if USE_PROXY:
-        log_and_progress("Proxy check kar rahe hain...", 0.0)
-        ip_info = _check_proxy_ip(driver)
-        log_and_progress(f"Proxy IP check result: {ip_info}", 0.02)
+    if USE_ZENROWS:
+        log_and_progress("ZenRows API use ho rahi hai — Selenium/Chrome ki zaroorat nahi hai.", 0.0)
+        driver = None
     else:
-        log_and_progress("Proxy OFF hai (USE_PROXY False ya credentials missing) — direct connection use ho rahi hai.", 0.0)
+        driver = get_driver()
+        if USE_PROXY:
+            log_and_progress("Proxy check kar rahe hain...", 0.0)
+            ip_info = _check_proxy_ip(driver)
+            log_and_progress(f"Proxy IP check result: {ip_info}", 0.02)
+        else:
+            log_and_progress("Proxy OFF hai (USE_PROXY False ya credentials missing) — direct connection use ho rahi hai.", 0.0)
 
     match_rows = []
     batting_frames = []
@@ -795,14 +835,18 @@ def run_pipeline(links, scrape_photos, progress_cb):
 st.set_page_config(page_title="CricHeroes Full Automation", layout="wide")
 st.title("🏏 CricHeroes Full Automation Dashboard")
 
-if SELENIUM_AVAILABLE:
+CAN_SCRAPE = SELENIUM_AVAILABLE or USE_ZENROWS
+
+if CAN_SCRAPE:
     st.caption("Ek ya multiple CricHeroes scorecard links do — scraping se lekar final Batting/Bowling/Match files tak, sab automatic.")
+    if USE_ZENROWS:
+        st.caption("🔑 ZenRows API active hai — Cloudflare bypass isi se ho raha hai.")
 else:
     st.warning(
-        "⚠️ Is environment me Chrome/Selenium available nahi hai (jaise Streamlit Community Cloud), "
-        "isliye live scraping yahan nahi chalegi. Scraping apne **local computer** pe `streamlit run app.py` "
-        "se chalao, phir yahan neeche pehle-se-scraped files upload karo ya `cricket_output/` folder GitHub "
-        "repo me commit kar do — wo automatically load ho jaayengi."
+        "⚠️ Is environment me Chrome/Selenium available nahi hai aur ZenRows API key bhi set nahi hai, "
+        "isliye live scraping yahan nahi chalegi. Ya to ZenRows API key secrets me daalo, ya scraping apne "
+        "**local computer** pe `streamlit run app.py` se chalao, phir yahan neeche pehle-se-scraped files "
+        "upload karo ya `cricket_output/` folder GitHub repo me commit kar do — wo automatically load ho jaayengi."
     )
 
 # ---- Auto-load previously saved output files (e.g. committed to the GitHub repo) ----
@@ -817,19 +861,19 @@ if "results" not in st.session_state:
         }
         st.session_state["results"] = auto_results
 
-# ---- Scraping form: only usable where Selenium/Chrome is actually available ----
+# ---- Scraping form: only usable where Selenium/Chrome OR ZenRows is actually available ----
 with st.form("scrape_form"):
     links_text = st.text_area(
         "CricHeroes scorecard links (ek line me ek link):",
         height=150,
         placeholder="https://cricheroes.com/scorecard/26163958/30-yca-series-match/vijay-u-19-vs-cfn-u-19/scorecard",
-        disabled=not SELENIUM_AVAILABLE,
+        disabled=not CAN_SCRAPE,
     )
     scrape_photos = st.checkbox("Player profile photos + batting/bowling style bhi scrape karein (dheema hai)",
-                                 value=True, disabled=not SELENIUM_AVAILABLE)
-    submitted = st.form_submit_button("🚀 Run Pipeline", disabled=not SELENIUM_AVAILABLE)
+                                 value=True, disabled=not CAN_SCRAPE)
+    submitted = st.form_submit_button("🚀 Run Pipeline", disabled=not CAN_SCRAPE)
 
-if submitted and SELENIUM_AVAILABLE:
+if submitted and CAN_SCRAPE:
     links = [l.strip() for l in links_text.split("\n") if l.strip()]
     if not links:
         st.error("Kam se kam ek link daalo.")
@@ -841,9 +885,12 @@ if submitted and SELENIUM_AVAILABLE:
             status_box.info(msg)
             progress_bar.progress(min(max(frac, 0.0), 1.0))
 
-        spinner_msg = ("Pipeline chal raha hai (headless mode — koi visible window nahi khulegi, "
-                       "yahi normal hai)...") if not SELENIUM_AVAILABLE or os.path.exists("/usr/bin/chromium") \
-            else "Pipeline chal raha hai... browser window open hogi, use band mat karo."
+        if USE_ZENROWS:
+            spinner_msg = "Pipeline chal raha hai (ZenRows API ke zariye — koi browser nahi khulega, yahi normal hai)..."
+        elif os.path.exists("/usr/bin/chromium"):
+            spinner_msg = "Pipeline chal raha hai (headless mode — koi visible window nahi khulegi, yahi normal hai)..."
+        else:
+            spinner_msg = "Pipeline chal raha hai... browser window open hogi, use band mat karo."
         with st.spinner(spinner_msg):
             results = run_pipeline(links, scrape_photos, progress_cb)
 
@@ -860,8 +907,8 @@ if submitted and SELENIUM_AVAILABLE:
 
         st.session_state["results"] = results
 
-# ---- Cloud-friendly manual upload path (no Selenium needed) ----
-if not SELENIUM_AVAILABLE:
+# ---- Cloud-friendly manual upload path ----
+if not CAN_SCRAPE:
     st.subheader("📤 Ya phir apni pehle-se-scraped files yahan upload karo")
     up_cols = st.columns(4)
     up_match = up_cols[0].file_uploader("Match_Master.csv", type=["csv"], key="up_match")

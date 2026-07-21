@@ -97,6 +97,55 @@ BOWL_DROP = ["player_id", "is_impact_player_in", "is_impact_player_out", "minute
 # =====================================================================
 # BROWSER
 # =====================================================================
+def build_proxy_auth_extension(proxy_host, proxy_port, proxy_user, proxy_pass, folder="/tmp/proxy_auth_ext"):
+    """Chrome --proxy-server flag user:pass auth support nahi karta,
+    isliye ek chhota extension bana kar inject karte hain jo auth handle kare."""
+    os.makedirs(folder, exist_ok=True)
+    manifest = """
+    {
+        "version": "1.0.0",
+        "manifest_version": 2,
+        "name": "Proxy Auth Extension",
+        "permissions": [
+            "proxy", "tabs", "unlimitedStorage", "storage",
+            "<all_urls>", "webRequest", "webRequestBlocking"
+        ],
+        "background": {"scripts": ["background.js"]},
+        "minimum_chrome_version": "22.0.0"
+    }
+    """
+    background_js = f"""
+    var config = {{
+        mode: "fixed_servers",
+        rules: {{
+            singleProxy: {{scheme: "http", host: "{proxy_host}", port: parseInt({proxy_port})}},
+            bypassList: ["localhost"]
+        }}
+    }};
+    chrome.proxy.settings.set({{value: config, scope: "regular"}}, function() {{}});
+    chrome.webRequest.onAuthRequired.addListener(
+        function(details) {{
+            return {{authCredentials: {{username: "{proxy_user}", password: "{proxy_pass}"}}}};
+        }},
+        {{urls: ["<all_urls>"]}},
+        ["blocking"]
+    );
+    """
+    with open(os.path.join(folder, "manifest.json"), "w") as f:
+        f.write(manifest)
+    with open(os.path.join(folder, "background.js"), "w") as f:
+        f.write(background_js)
+    return folder
+
+
+# ---- Bright Data / any authenticated proxy config (leave blank to disable) ----
+PROXY_HOST = "brd.superproxy.io"
+PROXY_PORT = "33335"
+PROXY_USER = "brd-customer-hl_35b1101b-zone-crichero_proxy"
+PROXY_PASS = "2lkbde2p544p"
+USE_PROXY = True  # False kar do agar proxy use nahi karna
+
+
 def get_driver():
     if not SELENIUM_AVAILABLE:
         raise RuntimeError(
@@ -119,12 +168,19 @@ def get_driver():
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--window-size=1920,1080")
+        if USE_PROXY:
+            ext_folder = build_proxy_auth_extension(PROXY_HOST, PROXY_PORT, PROXY_USER, PROXY_PASS)
+            options.add_argument(f"--load-extension={ext_folder}")
         options.binary_location = system_chromium
         return uc.Chrome(options=options, driver_executable_path=chromedriver_path)
     else:
         # ---- Local machine: real Chrome, non-headless (matches your original notebook setup) ----
         options = uc.ChromeOptions()
         options.add_argument("--window-size=1920,1080")
+        if USE_PROXY:
+            ext_folder = build_proxy_auth_extension(PROXY_HOST, PROXY_PORT, PROXY_USER, PROXY_PASS,
+                                                     folder=os.path.join(os.getcwd(), "proxy_auth_ext"))
+            options.add_argument(f"--load-extension={ext_folder}")
         return uc.Chrome(options=options, version_main=CHROME_MAIN_VERSION)
 
 

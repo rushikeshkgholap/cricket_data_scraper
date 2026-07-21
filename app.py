@@ -97,45 +97,11 @@ BOWL_DROP = ["player_id", "is_impact_player_in", "is_impact_player_out", "minute
 # =====================================================================
 # BROWSER
 # =====================================================================
-def build_proxy_auth_extension(proxy_host, proxy_port, proxy_user, proxy_pass, folder="/tmp/proxy_auth_ext"):
-    """Chrome --proxy-server flag user:pass auth support nahi karta,
-    isliye ek chhota extension bana kar inject karte hain jo auth handle kare."""
-    os.makedirs(folder, exist_ok=True)
-    manifest = """
-    {
-        "version": "1.0.0",
-        "manifest_version": 2,
-        "name": "Proxy Auth Extension",
-        "permissions": [
-            "proxy", "tabs", "unlimitedStorage", "storage",
-            "<all_urls>", "webRequest", "webRequestBlocking"
-        ],
-        "background": {"scripts": ["background.js"]},
-        "minimum_chrome_version": "22.0.0"
-    }
-    """
-    background_js = f"""
-    var config = {{
-        mode: "fixed_servers",
-        rules: {{
-            singleProxy: {{scheme: "http", host: "{proxy_host}", port: parseInt({proxy_port})}},
-            bypassList: ["localhost"]
-        }}
-    }};
-    chrome.proxy.settings.set({{value: config, scope: "regular"}}, function() {{}});
-    chrome.webRequest.onAuthRequired.addListener(
-        function(details) {{
-            return {{authCredentials: {{username: "{proxy_user}", password: "{proxy_pass}"}}}};
-        }},
-        {{urls: ["<all_urls>"]}},
-        ["blocking"]
-    );
-    """
-    with open(os.path.join(folder, "manifest.json"), "w") as f:
-        f.write(manifest)
-    with open(os.path.join(folder, "background.js"), "w") as f:
-        f.write(background_js)
-    return folder
+try:
+    from seleniumwire import webdriver as wire_webdriver
+    SELENIUMWIRE_AVAILABLE = True
+except Exception:
+    SELENIUMWIRE_AVAILABLE = False
 
 
 def _get_secret(key, default=""):
@@ -154,6 +120,17 @@ PROXY_PASS = _get_secret("pass", "")
 USE_PROXY = str(_get_secret("enabled", "true")).lower() == "true" and bool(PROXY_USER) and bool(PROXY_PASS)
 
 
+def _check_proxy_ip(driver):
+    """Diagnostic: confirm the proxy is actually being used by checking the outbound IP."""
+    try:
+        driver.get("https://geo.brdtest.com/welcome.txt")
+        time.sleep(2)
+        body = driver.find_element(By.TAG_NAME, "body").text[:300]
+        return body
+    except Exception as e:
+        return f"(IP check failed: {e})"
+
+
 def get_driver():
     if not SELENIUM_AVAILABLE:
         raise RuntimeError(
@@ -164,32 +141,49 @@ def get_driver():
     system_chromium = "/usr/bin/chromium" if os.path.exists("/usr/bin/chromium") else \
         ("/usr/bin/chromium-browser" if os.path.exists("/usr/bin/chromium-browser") else None)
 
+    use_wire = USE_PROXY and SELENIUMWIRE_AVAILABLE
+
     if system_chromium:
-        # ---- Streamlit Cloud / Linux server: headless system Chromium (same pattern as lead-gen app) ----
+        # ---- Streamlit Cloud / Linux server: headless system Chromium ----
         chromedriver_path = "/tmp/chromedriver"
         if not os.path.exists(chromedriver_path) and os.path.exists("/usr/bin/chromedriver"):
             shutil.copy("/usr/bin/chromedriver", chromedriver_path)
             os.chmod(chromedriver_path, 0o755)
 
         options = uc.ChromeOptions()
-        options.add_argument("--headless")  # legacy headless: extensions load more reliably than --headless=new
+        options.add_argument("--headless=new")
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--window-size=1920,1080")
-        if USE_PROXY:
-            ext_folder = build_proxy_auth_extension(PROXY_HOST, PROXY_PORT, PROXY_USER, PROXY_PASS)
-            options.add_argument(f"--load-extension={ext_folder}")
         options.binary_location = system_chromium
-        return uc.Chrome(options=options, driver_executable_path=chromedriver_path)
+
+        if use_wire:
+            proxy_url = f"http://{PROXY_USER}:{PROXY_PASS}@{PROXY_HOST}:{PROXY_PORT}"
+            sw_options = {
+                "proxy": {"http": proxy_url, "https": proxy_url, "no_proxy": "localhost,127.0.0.1"}
+            }
+            driver = wire_webdriver.Chrome(
+                options=options,
+                seleniumwire_options=sw_options,
+                service=uc.service.Service(executable_path=chromedriver_path) if hasattr(uc, "service") else None,
+            )
+        else:
+            driver = uc.Chrome(options=options, driver_executable_path=chromedriver_path)
     else:
         # ---- Local machine: real Chrome, non-headless (matches your original notebook setup) ----
         options = uc.ChromeOptions()
         options.add_argument("--window-size=1920,1080")
-        if USE_PROXY:
-            ext_folder = build_proxy_auth_extension(PROXY_HOST, PROXY_PORT, PROXY_USER, PROXY_PASS,
-                                                     folder=os.path.join(os.getcwd(), "proxy_auth_ext"))
-            options.add_argument(f"--load-extension={ext_folder}")
-        return uc.Chrome(options=options, version_main=CHROME_MAIN_VERSION)
+
+        if use_wire:
+            proxy_url = f"http://{PROXY_USER}:{PROXY_PASS}@{PROXY_HOST}:{PROXY_PORT}"
+            sw_options = {
+                "proxy": {"http": proxy_url, "https": proxy_url, "no_proxy": "localhost,127.0.0.1"}
+            }
+            driver = wire_webdriver.Chrome(options=options, seleniumwire_options=sw_options)
+        else:
+            driver = uc.Chrome(options=options, version_main=CHROME_MAIN_VERSION)
+
+    return driver
 
 
 # =====================================================================
@@ -689,6 +683,11 @@ def build_final_bowling_excel(bowling_df, players_df, out_path):
 def run_pipeline(links, scrape_photos, progress_cb):
     driver = get_driver()
 
+    if USE_PROXY:
+        progress_cb("Proxy check kar rahe hain...", 0.0)
+        ip_info = _check_proxy_ip(driver)
+        progress_cb(f"Proxy IP check result: {ip_info}", 0.02)
+
     match_rows = []
     batting_frames = []
     bowling_frames = []
@@ -833,7 +832,10 @@ if submitted and SELENIUM_AVAILABLE:
             status_box.info(msg)
             progress_bar.progress(min(max(frac, 0.0), 1.0))
 
-        with st.spinner("Pipeline chal raha hai... browser window open hogi, use band mat karo."):
+        spinner_msg = ("Pipeline chal raha hai (headless mode — koi visible window nahi khulegi, "
+                       "yahi normal hai)...") if not SELENIUM_AVAILABLE or os.path.exists("/usr/bin/chromium") \
+            else "Pipeline chal raha hai... browser window open hogi, use band mat karo."
+        with st.spinner(spinner_msg):
             results = run_pipeline(links, scrape_photos, progress_cb)
 
         st.success("Pipeline complete!")

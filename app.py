@@ -338,7 +338,7 @@ def clean_bowling(bowlers):
 # =====================================================================
 # STAGE A: scrape one match scorecard
 # =====================================================================
-def scrape_match(url, driver, wait_seconds=10):
+def scrape_match(url, driver, wait_seconds=15):
     match_id = get_match_id(url)
     driver.get(url)
     time.sleep(wait_seconds)
@@ -347,7 +347,19 @@ def scrape_match(url, driver, wait_seconds=10):
 
     raw = get_raw_blob(soup)
     if raw is None:
-        return None, "Script data block nahi mila (page structure badal gaya ho sakta hai)."
+        page_title = (soup.title.string.strip() if soup.title and soup.title.string else "(no title)")
+        html_len = len(html)
+        lowered_html = html.lower()
+        block_hint = ""
+        for kw in ["captcha", "cloudflare", "access denied", "are you human",
+                   "just a moment", "checking your browser", "unusual traffic"]:
+            if kw in lowered_html:
+                block_hint = f" — possible bot-block detected (found '{kw}' in page)"
+                break
+        return None, (
+            f"Script data block nahi mila (page structure badal gaya ho sakta hai). "
+            f"[debug: page_title='{page_title}', html_length={html_len}{block_hint}]"
+        )
 
     scorecard_block = extract_json_array(raw, "scorecard")
     if scorecard_block is None:
